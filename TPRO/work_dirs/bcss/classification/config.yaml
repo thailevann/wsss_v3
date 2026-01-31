@@ -1,0 +1,74 @@
+model:
+  backbone:
+    config: mit_b1
+    stride:
+    - 4
+    - 2
+    - 2
+    - 1
+  label_feature_path: medclip/bcss_label_fea
+
+  # Repo chỉ có clinical_bert; đổi lại bio_clinical_bert khi có folder text_features/bio_clinical_bert
+  knowledge_encoder: clinical_bert
+  knowledge_feature_path: clinical_bert/bcss_knowledge_fea
+  bio_model_name: emilyalsentzer/Bio_ClinicalBERT
+
+  n_ratio: 0.5
+  engram_reweight_pseudo: false
+  engram_confidence_mode: norm
+
+dataset:
+  name: bcss
+  train_root: /home/thaivan/Desktop/research-2026/thaivan/trpo/BCSS-WSSS/training
+  val_root: /home/thaivan/Desktop/research-2026/thaivan/trpo/BCSS-WSSS/
+  cls_num_classes: 4
+  input_size:
+  - 224
+  - 224
+
+work_dir:
+  ckpt_dir: checkpoints
+  pred_dir: predictions
+  train_log_dir: train_log
+  log_file: ""
+
+train:
+  samples_per_gpu: 10
+  epoch: 20
+  pretrained: true
+  l1: 0.0
+  l2: 0.1
+  l3: 1.0
+  l4: 1.0
+  warmup_iters: 1000
+  ramp_iters: 1000
+  lir_weight: 1.0
+  lir_weight_cre: 0.1
+  lir_lam_l: 0.2
+  lir_lam_h: 0.7
+  lir_tau: 0.07
+  consist_weight: 0.1
+  # true: mask1 = get_seg_label(cam4.detach()) for consistency (stable, no CAM collapse)
+  consist_detach_cam: true
+  # true: fuse = (1-alpha)*(0.5*cam2+0.5*cam3) + alpha*cam4, alpha = min(fuse_alpha_max, epoch/T); false: fuse = 0.3*cam2+0.3*cam3+0.4*cam4
+  fuse_reweight_epoch: true
+  fuse_ramp_epochs: 5
+  fuse_alpha_max: 0.6  # alpha in [0, 0.6] -> at least 40% cam2+cam3 always
+  pseudo_refine_enabled: false
+  pseudo_refine_lam_low: 0.2
+  pseudo_refine_lam_high: 0.7
+  pseudo_refine_max_cost: 10.0
+  pseudo_refine_neighbor: 4
+
+optimizer:
+  type: AdamW
+  learning_rate: 0.0001
+  betas:
+  - 0.9
+  - 0.999
+  weight_decay: 0.001
+
+scheduler:
+  warmup_iter: 0
+  warmup_ratio: 1.0e-06
+  power: 1.0

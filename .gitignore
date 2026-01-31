@@ -1,0 +1,28 @@
+# Skip pretrained weights (large files)
+TPRO/pretrained/
+
+# Skip training outputs (checkpoints, logs)
+TPRO/work_dirs/bcss/classification/train_log
+TPRO/work_dirs/bcss/classification/checkpoints
+TPRO/work_dirs/bcss/classification/predictions
+# Keep TPRO/text&features - do not ignore
+
+# Only push TPRO: ignore rest of repo root
+BCSS-WSSS/
+BCSS-WSSS.zip
+*.code-workspace
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.Python
+*.so
+.eggs/
+*.egg-info/
+*.egg
+
+# Virtual env
+.venv/
+venv/
+env/
