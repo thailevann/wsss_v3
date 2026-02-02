@@ -30,9 +30,10 @@ def setup_logger(filename='test.log'):
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
 
-    fHandler = logging.FileHandler(filename, mode='w')
-    fHandler.setFormatter(logFormatter)
-    logger.addHandler(fHandler)
+    if filename:
+        fHandler = logging.FileHandler(filename, mode='w')
+        fHandler.setFormatter(logFormatter)
+        logger.addHandler(fHandler)
 
     cHandler = logging.StreamHandler()
     cHandler.setFormatter(logFormatter)

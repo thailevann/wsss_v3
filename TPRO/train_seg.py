@@ -245,17 +245,16 @@ if __name__ == "__main__":
 
     cfg.work_dir.ckpt_dir = os.path.join(cfg.work_dir.dir, cfg.work_dir.ckpt_dir, timestamp)
     cfg.work_dir.pred_dir = os.path.join(cfg.work_dir.dir, cfg.work_dir.pred_dir)
-    cfg.work_dir.train_log_dir = os.path.join(cfg.work_dir.dir, cfg.work_dir.train_log_dir)
 
     os.makedirs(cfg.work_dir.dir, exist_ok=True)
     os.makedirs(cfg.work_dir.ckpt_dir, exist_ok=True)
     os.makedirs(cfg.work_dir.pred_dir, exist_ok=True)
-    os.makedirs(cfg.work_dir.train_log_dir, exist_ok=True)
 
     if args.local_rank == 0:
         if args.wandb_log:
             wandb.init(project="TPRO-{}-wsss".format(cfg.dataset.name))
-        setup_logger(filename=os.path.join(cfg.work_dir.train_log_dir, timestamp + '.log'))
+        # Skip file logging to save RAM
+        setup_logger(filename=None)
         logging.info('\nargs: %s' % args)
         logging.info('\nconfigs: %s' % cfg)
 

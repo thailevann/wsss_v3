@@ -315,6 +315,8 @@ def train(cfg):
         bio_model_name=cfg.model.get("bio_model_name", "emilyalsentzer/Bio_ClinicalBERT"),
         engram_confidence_mode=cfg.model.get("engram_confidence_mode", "norm"),
         engram_reweight_pseudo=cfg.model.get("engram_reweight_pseudo", True),
+        cam_refine_enabled=cfg.model.get("cam_refine_enabled", True),
+        cam_refine_init_gamma=cfg.model.get("cam_refine_init_gamma", 0.0),
     )
 
     logging.info('\nNetwork config: \n%s' % (wetr))
@@ -520,22 +522,16 @@ if __name__ == "__main__":
     timestamp = "{0:%Y-%m-%d-%H-%M}".format(datetime.datetime.now())
     cfg.work_dir.ckpt_dir = os.path.join(cfg.work_dir.dir, cfg.work_dir.ckpt_dir, timestamp)
     cfg.work_dir.pred_dir = os.path.join(cfg.work_dir.dir, cfg.work_dir.pred_dir)
-    cfg.work_dir.train_log_dir = os.path.join(cfg.work_dir.dir, cfg.work_dir.train_log_dir)
 
     os.makedirs(cfg.work_dir.dir, exist_ok=True)
     os.makedirs(cfg.work_dir.ckpt_dir, exist_ok=True)
     os.makedirs(cfg.work_dir.pred_dir, exist_ok=True)
-    os.makedirs(cfg.work_dir.train_log_dir, exist_ok=True)
 
     if args.local_rank == 0:
         if args.wandb_log:
             wandb.init(project='TPRO-%s-cls' % cfg.dataset.name)
-        log_file = getattr(cfg.work_dir, "log_file", None) or ""
-        if log_file.strip():
-            log_path = log_file if os.path.isabs(log_file) else os.path.join(cfg.work_dir.train_log_dir, log_file.strip())
-        else:
-            log_path = os.path.join(cfg.work_dir.train_log_dir, timestamp + '.log')
-        setup_logger(filename=log_path)
+        # Skip file logging to save RAM
+        setup_logger(filename=None)
         logging.info('\nargs: %s' % args)
         logging.info('\nconfigs: %s' % cfg)
 

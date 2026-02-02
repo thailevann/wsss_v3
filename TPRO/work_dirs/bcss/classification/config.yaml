@@ -8,7 +8,6 @@ model:
     - 1
   label_feature_path: medclip/bcss_label_fea
 
-  # Repo chỉ có clinical_bert; đổi lại bio_clinical_bert khi có folder text_features/bio_clinical_bert
   knowledge_encoder: clinical_bert
   knowledge_feature_path: clinical_bert/bcss_knowledge_fea
   bio_model_name: emilyalsentzer/Bio_ClinicalBERT
@@ -16,11 +15,14 @@ model:
   n_ratio: 0.5
   engram_reweight_pseudo: false
   engram_confidence_mode: norm
+  # CAM-Guided Residual Refinement for Stage 3
+  cam_refine_enabled: true
+  cam_refine_init_gamma: 0.0  # Start disabled, learn when needed
 
 dataset:
   name: bcss
-  train_root: /home/thaivan/Desktop/research-2026/thaivan/trpo/BCSS-WSSS/training
-  val_root: /home/thaivan/Desktop/research-2026/thaivan/trpo/BCSS-WSSS/
+  train_root: /kaggle/working/wsss_v3/BCSS-WSSS/training
+  val_root: /kaggle/working/wsss_v3/BCSS-WSSS/
   cls_num_classes: 4
   input_size:
   - 224
@@ -29,8 +31,6 @@ dataset:
 work_dir:
   ckpt_dir: checkpoints
   pred_dir: predictions
-  train_log_dir: train_log
-  log_file: ""
 
 train:
   samples_per_gpu: 10

@@ -10,6 +10,7 @@ from cls_network import mix_transformer
 from cls_network.attention import Block
 from cls_network.engram import EMACodebook, EngramVision, EngramInject
 from cls_network.knowledge_encoders import load_knowledge_features
+from cls_network.cam_refine import CAMGuidedResidual, create_cam_mask
 
 
 
@@ -105,6 +106,13 @@ class ClsNetwork(nn.Module):
         self.engram4 = EngramVision(dim=C4, vocab_size=engram_vocab_size, num_heads=4)
         self.engram_inject = EngramInject(init_alpha=-2.0)
 
+        ## CAM-Guided Residual Refinement for Stage 3
+        self.cam_refine_enabled = kwargs.get('cam_refine_enabled', True)
+        self.cam_refine_init_gamma = kwargs.get('cam_refine_init_gamma', 0.0)
+        if self.cam_refine_enabled:
+            C3 = self.in_channels[2]
+            self.cam_refine = CAMGuidedResidual(init_gamma=self.cam_refine_init_gamma)
+
     def get_param_groups(self):
         regularized = []
         not_regularized = []
@@ -113,14 +121,88 @@ class ClsNetwork(nn.Module):
                 continue
             if name.endswith(".bias") or len(param.shape) == 1:
                 not_regularized.append(param)
-            elif "log_alpha" in name or "engram_inject" in name:
+            elif "log_alpha" in name or "engram_inject" in name or "cam_refine.gamma" in name:
                 not_regularized.append(param)
             else:
                 regularized.append(param)
         return [{'params': regularized}, {'params': not_regularized, 'weight_decay': 0.}]
 
+    def _forward_encoder_with_refinement(self, x):
+        """
+        Forward encoder with CAM-guided refinement for Stage 3.
+        Refines F3 before feeding to Stage 4.
+        """
+        B = x.shape[0]
+        outs = []
+        attns = []
+        
+        # Stage 1
+        x, H, W = self.encoder.patch_embed1(x)
+        for i, blk in enumerate(self.encoder.block1):
+            x, attn = blk(x, H, W)
+            attns.append(attn)
+        x = self.encoder.norm1(x)
+        x = x.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
+        outs.append(x)
+        
+        # Stage 2
+        x, H, W = self.encoder.patch_embed2(x)
+        for i, blk in enumerate(self.encoder.block2):
+            x, attn = blk(x, H, W)
+            attns.append(attn)
+        x = self.encoder.norm2(x)
+        x = x.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
+        outs.append(x)
+        
+        # Stage 3
+        x, H, W = self.encoder.patch_embed3(x)
+        for i, blk in enumerate(self.encoder.block3):
+            x, attn = blk(x, H, W)
+            attns.append(attn)
+        x = self.encoder.norm3(x)
+        x = x.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
+        F3_raw = x
+        outs.append(F3_raw)
+        
+        # CAM-Guided Refinement for Stage 3 (if enabled)
+        if self.cam_refine_enabled and hasattr(self, 'cam_refine'):
+            # Compute CAM3 from F3_raw (before refinement) - MUST use F3_raw, not F3_refined
+            imshape_3 = F3_raw.shape
+            _x3_flat = F3_raw.permute(0, 2, 3, 1).reshape(-1, F3_raw.shape[1])
+            _x3_flat = _x3_flat / _x3_flat.norm(dim=-1, keepdim=True)
+            l_fea3 = self.l_fc3(self.l_fea.to(x.device))
+            logits_per_image3 = self.logit_scale3 * _x3_flat @ l_fea3.t().float()
+            out3_raw = logits_per_image3.view(imshape_3[0], imshape_3[2], imshape_3[3], -1).permute(0, 3, 1, 2)
+            cam3 = out3_raw.clone().detach()  # Detach to avoid backprop through CAM
+            
+            # Store CAM3 for later use (will be used in main forward, not recomputed)
+            self._cam3_from_raw = cam3
+            
+            # Create CAM mask and refine F3
+            cam3_mask = create_cam_mask(cam3, detach=True)  # (B, 1, H, W)
+            F3_refined = self.cam_refine(F3_raw, cam3_mask)
+            x = F3_refined
+        else:
+            x = F3_raw
+            self._cam3_from_raw = None
+        
+        # Stage 4 (with refined F3 if enabled)
+        x, H, W = self.encoder.patch_embed4(x)
+        for i, blk in enumerate(self.encoder.block4):
+            x, attn = blk(x, H, W)
+            attns.append(attn)
+        x = self.encoder.norm4(x)
+        x = x.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
+        outs.append(x)
+        
+        return outs, attns
+
     def forward(self, x, ema_update_enabled=True, **kwargs):
-        _x, _attns = self.encoder(x) 
+        # Use refinement-aware forward if enabled
+        if self.cam_refine_enabled and hasattr(self, 'cam_refine'):
+            _x, _attns = self._forward_encoder_with_refinement(x)
+        else:
+            _x, _attns = self.encoder(x) 
 
         logit_scale1 = self.logit_scale1
         logit_scale2 = self.logit_scale2
@@ -149,8 +231,15 @@ class ClsNetwork(nn.Module):
 
         _x3 = _x3 / _x3.norm(dim=-1, keepdim=True)
         logits_per_image3 = logit_scale3 * _x3 @ l_fea3.t().float() 
-        out3 = logits_per_image3.view(imshape[2][0], imshape[2][2], imshape[2][3], -1).permute(0, 3, 1, 2) 
-        cam3 = out3.clone().detach()
+        out3 = logits_per_image3.view(imshape[2][0], imshape[2][2], imshape[2][3], -1).permute(0, 3, 1, 2)
+        
+        # Use CAM3 computed from F3_raw if refinement is enabled (to avoid self-feedback loop)
+        # CAM3 MUST be computed from F3_raw, not from F3_refined
+        if hasattr(self, '_cam3_from_raw') and self._cam3_from_raw is not None:
+            cam3 = self._cam3_from_raw  # Already detached, computed from F3_raw
+            # Still need out3 for cls3 computation (computed from refined features is OK for classification)
+        else:
+            cam3 = out3.clone().detach()
         cls3 = self.pooling(out3, (1, 1)).view(-1, l_fea3.shape[0]) 
 
         k_fea = self.k_fea.to(x.device)

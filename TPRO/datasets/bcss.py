@@ -1,5 +1,4 @@
 import numpy as np
-from numpy.lib.utils import deprecate
 import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset
