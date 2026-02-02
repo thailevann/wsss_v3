@@ -164,7 +164,6 @@ class ClsNetwork(nn.Module):
         x = self.encoder.norm3(x)
         x = x.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
         F3_raw = x
-        outs.append(F3_raw)
         
         # CAM-Guided Refinement for Stage 3 (if enabled)
         if self.cam_refine_enabled and hasattr(self, 'cam_refine'):
@@ -180,8 +179,13 @@ class ClsNetwork(nn.Module):
             # Create CAM mask and refine F3
             cam3_mask = create_cam_mask(cam3_from_raw, detach=True)  # (B, 1, H, W)
             F3_refined = self.cam_refine(F3_raw, cam3_mask)
+            # Only append refined version to save memory
+            outs.append(F3_refined)
             x = F3_refined
+            # Clear F3_raw reference to help GC
+            del F3_raw
         else:
+            outs.append(F3_raw)
             x = F3_raw
         
         # Stage 4 (with refined F3 if enabled)
@@ -209,8 +213,11 @@ class ClsNetwork(nn.Module):
         logit_scale4 = self.logit_scale4
 
         imshape = [_.shape for _ in _x]
-        image_features = [_.permute(0, 2, 3, 1).reshape(-1, _.shape[1]) for _ in _x]   
-        _x1, _x2, _x3, _x4 = image_features
+        # Process features directly to avoid creating intermediate list
+        _x1 = _x[0].permute(0, 2, 3, 1).reshape(-1, _x[0].shape[1])
+        _x2 = _x[1].permute(0, 2, 3, 1).reshape(-1, _x[1].shape[1])
+        _x3 = _x[2].permute(0, 2, 3, 1).reshape(-1, _x[2].shape[1])
+        _x4 = _x[3].permute(0, 2, 3, 1).reshape(-1, _x[3].shape[1])
         l_fea = self.l_fea.to(x.device)
         l_fea1 = self.l_fc1(l_fea)
         l_fea2 = self.l_fc2(l_fea)
@@ -219,26 +226,28 @@ class ClsNetwork(nn.Module):
         _x1 = _x1 / _x1.norm(dim=-1, keepdim=True)
         logits_per_image1 = logit_scale1 * _x1 @ l_fea1.t().float() 
         out1 = logits_per_image1.view(imshape[0][0], imshape[0][2], imshape[0][3], -1).permute(0, 3, 1, 2) 
-        cam1 = out1.clone().detach()
+        cam1 = out1.detach()  # No need to clone, just detach
         cls1 = self.pooling(out1, (1, 1)).view(-1, l_fea1.shape[0]) 
 
         _x2 = _x2 / _x2.norm(dim=-1, keepdim=True)
         logits_per_image2 = logit_scale2 * _x2 @ l_fea2.t().float() 
         out2 = logits_per_image2.view(imshape[1][0], imshape[1][2], imshape[1][3], -1).permute(0, 3, 1, 2) 
-        cam2 = out2.clone().detach()
+        cam2 = out2.detach()  # No need to clone, just detach
         cls2 = self.pooling(out2, (1, 1)).view(-1, l_fea2.shape[0]) 
 
-        _x3 = _x3 / _x3.norm(dim=-1, keepdim=True)
-        logits_per_image3 = logit_scale3 * _x3 @ l_fea3.t().float() 
-        out3 = logits_per_image3.view(imshape[2][0], imshape[2][2], imshape[2][3], -1).permute(0, 3, 1, 2)
-        
         # Use CAM3 computed from F3_raw if refinement is enabled (to avoid self-feedback loop)
         # CAM3 MUST be computed from F3_raw, not from F3_refined
         if cam3_from_raw is not None:
             cam3 = cam3_from_raw  # Already detached, computed from F3_raw
-            # Still need out3 for cls3 computation (computed from refined features is OK for classification)
+            # For cls3, we still compute from refined features (which is OK for classification)
+            _x3 = _x3 / _x3.norm(dim=-1, keepdim=True)
+            logits_per_image3 = logit_scale3 * _x3 @ l_fea3.t().float() 
+            out3 = logits_per_image3.view(imshape[2][0], imshape[2][2], imshape[2][3], -1).permute(0, 3, 1, 2)
         else:
-            cam3 = out3.clone().detach()
+            _x3 = _x3 / _x3.norm(dim=-1, keepdim=True)
+            logits_per_image3 = logit_scale3 * _x3 @ l_fea3.t().float() 
+            out3 = logits_per_image3.view(imshape[2][0], imshape[2][2], imshape[2][3], -1).permute(0, 3, 1, 2)
+            cam3 = out3.detach()  # No need to clone, just detach
         cls3 = self.pooling(out3, (1, 1)).view(-1, l_fea3.shape[0]) 
 
         k_fea = self.k_fea.to(x.device)
@@ -249,8 +258,7 @@ class ClsNetwork(nn.Module):
         patch_feat_raw_4 = _x4
 
         cluster_ids = self.ema_codebook(_x4, update=ema_update_enabled)
-        if self.training:
-            self._last_cluster_ids = cluster_ids
+        # Removed self._last_cluster_ids to save memory (not used anywhere)
         knowledge_tokens = self.engram4(_x4, position_ids=cluster_ids)
         enhanced_patches = self.engram_inject(_x4, knowledge_tokens)
 
@@ -271,9 +279,9 @@ class ClsNetwork(nn.Module):
             else:
                 w = torch.sigmoid(E.norm(dim=-1))
             w_spatial = w.view(imshape[3][0], 1, imshape[3][2], imshape[3][3])
-            cam4 = (w_spatial * out4).clone().detach()
+            cam4 = (w_spatial * out4).detach()  # No need to clone, just detach
         else:
-            cam4 = out4.clone().detach()
+            cam4 = out4.detach()  # No need to clone, just detach
         cls4 = self.pooling(out4, (1, 1)).view(-1, l_fea4.shape[0])
         class_tokens_4 = l_fea4
 
