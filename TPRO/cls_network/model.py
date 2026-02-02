@@ -131,10 +131,12 @@ class ClsNetwork(nn.Module):
         """
         Forward encoder with CAM-guided refinement for Stage 3.
         Refines F3 before feeding to Stage 4.
+        Returns: (outs, attns, cam3_from_raw) where cam3_from_raw is computed from F3_raw
         """
         B = x.shape[0]
         outs = []
         attns = []
+        cam3_from_raw = None
         
         # Stage 1
         x, H, W = self.encoder.patch_embed1(x)
@@ -173,18 +175,14 @@ class ClsNetwork(nn.Module):
             l_fea3 = self.l_fc3(self.l_fea.to(x.device))
             logits_per_image3 = self.logit_scale3 * _x3_flat @ l_fea3.t().float()
             out3_raw = logits_per_image3.view(imshape_3[0], imshape_3[2], imshape_3[3], -1).permute(0, 3, 1, 2)
-            cam3 = out3_raw.clone().detach()  # Detach to avoid backprop through CAM
-            
-            # Store CAM3 for later use (will be used in main forward, not recomputed)
-            self._cam3_from_raw = cam3
+            cam3_from_raw = out3_raw.clone().detach()  # Detach to avoid backprop through CAM
             
             # Create CAM mask and refine F3
-            cam3_mask = create_cam_mask(cam3, detach=True)  # (B, 1, H, W)
+            cam3_mask = create_cam_mask(cam3_from_raw, detach=True)  # (B, 1, H, W)
             F3_refined = self.cam_refine(F3_raw, cam3_mask)
             x = F3_refined
         else:
             x = F3_raw
-            self._cam3_from_raw = None
         
         # Stage 4 (with refined F3 if enabled)
         x, H, W = self.encoder.patch_embed4(x)
@@ -195,14 +193,15 @@ class ClsNetwork(nn.Module):
         x = x.reshape(B, H, W, -1).permute(0, 3, 1, 2).contiguous()
         outs.append(x)
         
-        return outs, attns
+        return outs, attns, cam3_from_raw
 
     def forward(self, x, ema_update_enabled=True, **kwargs):
         # Use refinement-aware forward if enabled
         if self.cam_refine_enabled and hasattr(self, 'cam_refine'):
-            _x, _attns = self._forward_encoder_with_refinement(x)
+            _x, _attns, cam3_from_raw = self._forward_encoder_with_refinement(x)
         else:
-            _x, _attns = self.encoder(x) 
+            _x, _attns = self.encoder(x)
+            cam3_from_raw = None 
 
         logit_scale1 = self.logit_scale1
         logit_scale2 = self.logit_scale2
@@ -235,8 +234,8 @@ class ClsNetwork(nn.Module):
         
         # Use CAM3 computed from F3_raw if refinement is enabled (to avoid self-feedback loop)
         # CAM3 MUST be computed from F3_raw, not from F3_refined
-        if hasattr(self, '_cam3_from_raw') and self._cam3_from_raw is not None:
-            cam3 = self._cam3_from_raw  # Already detached, computed from F3_raw
+        if cam3_from_raw is not None:
+            cam3 = cam3_from_raw  # Already detached, computed from F3_raw
             # Still need out3 for cls3 computation (computed from refined features is OK for classification)
         else:
             cam3 = out3.clone().detach()
